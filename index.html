@@ -88,18 +88,36 @@ function feedUrl() {
   return `${BASE}/search?q=${encodeURIComponent(q)}&${LOC}`;
 }
 
+const TIMEOUT_MS = 5000;      // 프록시 하나당 최대 대기 시간
+const CACHE_MS = 10 * 60000;  // 캐시 유효 시간 (10분)
+
+// 모든 프록시를 동시에 호출하고, 먼저 성공한 응답을 사용 (나머지는 취소)
 async function fetchXml(url) {
-  let lastErr;
-  for (const p of PROXIES) {
-    try {
-      const r = await fetch(p(url));
-      if (!r.ok) throw new Error(r.status);
-      const doc = new DOMParser().parseFromString(await r.text(), "text/xml");
-      if (doc.querySelector("parsererror") || !doc.querySelector("item")) throw new Error("bad xml");
-      return doc;
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr;
+  const ctl = new AbortController();
+  const attempts = PROXIES.map(async p => {
+    const r = await fetch(p(url), { signal: AbortSignal.any([ctl.signal, AbortSignal.timeout(TIMEOUT_MS)]) });
+    if (!r.ok) throw new Error(r.status);
+    const text = await r.text();
+    const doc = new DOMParser().parseFromString(text, "text/xml");
+    if (doc.querySelector("parsererror") || !doc.querySelector("item")) throw new Error("bad xml");
+    return text;
+  });
+  try {
+    const text = await Promise.any(attempts);
+    ctl.abort();
+    return text;
+  } catch { throw new Error("all proxies failed"); }
+}
+
+function cacheGet(key, maxAge) {
+  try {
+    const c = JSON.parse(localStorage.getItem("news:" + key));
+    if (c && Date.now() - c.t < maxAge) return c.text;
+  } catch {}
+  return null;
+}
+function cacheSet(key, text) {
+  try { localStorage.setItem("news:" + key, JSON.stringify({ t: Date.now(), text })); } catch {}
 }
 
 function parse(doc) {
@@ -138,14 +156,28 @@ function render() {
     </div>`).join("");
 }
 
+const toDoc = text => new DOMParser().parseFromString(text, "text/xml");
+
 async function load() {
+  const url = feedUrl();
+  const fresh = cacheGet(url, CACHE_MS);
+  if (fresh) { articles = parse(toDoc(fresh)); render(); return; }   // 10분 이내: 즉시 표시
+
   $list.innerHTML = '<div class="msg">불러오는 중…</div>';
   try {
-    articles = parse(await fetchXml(feedUrl()));
+    const text = await fetchXml(url);
+    cacheSet(url, text);
+    articles = parse(toDoc(text));
     render();
   } catch (e) {
-    articles = [];
-    $list.innerHTML = '<div class="msg">뉴스를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</div>';
+    const stale = cacheGet(url, Infinity);   // 실패 시 오래된 캐시라도 보여줌
+    if (stale) {
+      articles = parse(toDoc(stale)); render();
+      $hint.textContent = "⚠ 최신 뉴스를 불러오지 못해 저장된 이전 결과를 보여주고 있어요.";
+    } else {
+      articles = [];
+      $list.innerHTML = '<div class="msg">뉴스를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</div>';
+    }
   }
 }
 
