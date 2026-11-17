@@ -37,10 +37,10 @@
 <body>
 <div class="wrap">
   <h1>📰 뉴스 모아보기</h1>
-  <div class="sub">Google 뉴스(한국) RSS를 실시간으로 불러옵니다 · API 키 불필요</div>
+  <div class="sub">사이버보안·방산 / 통계·경제 / 스포츠 뉴스만 Google 뉴스(한국) RSS로 불러옵니다</div>
 
   <form id="form">
-    <input type="search" id="q" placeholder="키워드 입력 (입력하면 목록 필터, Enter로 전체 검색)" autocomplete="off">
+    <input type="search" id="q" placeholder="키워드 입력 (입력하면 목록 필터, Enter로 주제 내 검색)" autocomplete="off">
     <button class="go" type="submit">검색</button>
   </form>
   <div class="hint" id="hint"></div>
@@ -52,10 +52,11 @@
 <script>
 const BASE = "https://news.google.com/rss";
 const LOC = "hl=ko&gl=KR&ceid=KR:ko";
+// 허용 주제와 각 주제의 검색 키워드 (이 범위 밖의 기사는 가져오지 않음)
 const TOPICS = [
-  ["", "주요"], ["NATION", "국내"], ["WORLD", "세계"], ["BUSINESS", "경제"],
-  ["TECHNOLOGY", "IT"], ["SCIENCE", "과학"], ["ENTERTAINMENT", "연예"],
-  ["SPORTS", "스포츠"], ["HEALTH", "건강"],
+  ["cyber", "사이버보안·방산", "사이버보안 OR 해킹 OR 랜섬웨어 OR 정보보호 OR 방산 OR 방위산업 OR 국방"],
+  ["econ",  "통계·경제",     "통계 OR 통계청 OR 경제지표 OR 물가 OR 성장률 OR 금리 OR 환율 OR 수출입"],
+  ["sports","스포츠",        "스포츠 OR 야구 OR 축구 OR 농구 OR 배구 OR 골프 OR 올림픽"],
 ];
 // 브라우저에서 직접 RSS를 못 읽으므로(CORS) 공개 프록시를 순서대로 시도합니다.
 const PROXIES = [
@@ -67,7 +68,7 @@ const $list = document.getElementById("list");
 const $q = document.getElementById("q");
 const $hint = document.getElementById("hint");
 const $tabs = document.getElementById("tabs");
-let articles = [], mode = { type: "topic", value: "" };
+let articles = [], topic = TOPICS[0][0], extra = "";
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
@@ -81,8 +82,10 @@ function ago(d) {
 }
 
 function feedUrl() {
-  if (mode.type === "search") return `${BASE}/search?q=${encodeURIComponent(mode.value)}&${LOC}`;
-  return mode.value ? `${BASE}/headlines/section/topic/${mode.value}?${LOC}` : `${BASE}?${LOC}`;
+  const group = TOPICS.find(t => t[0] === topic)[2];
+  // 추가 검색어는 항상 현재 주제 키워드 안에서만 검색
+  const q = extra ? `"${extra}" (${group})` : group;
+  return `${BASE}/search?q=${encodeURIComponent(q)}&${LOC}`;
 }
 
 async function fetchXml(url) {
@@ -125,7 +128,7 @@ function render() {
     ? articles.filter(a => (a.title + " " + a.src).toLowerCase().includes(kw.toLowerCase()))
     : articles;
   if (!rows.length) {
-    $list.innerHTML = `<div class="msg">${kw ? "현재 목록에 일치하는 기사가 없어요. Enter를 눌러 전체 검색해 보세요." : "기사가 없어요."}</div>`;
+    $list.innerHTML = `<div class="msg">${kw ? "현재 목록에 일치하는 기사가 없어요. Enter를 눌러 이 주제 안에서 검색해 보세요." : "기사가 없어요."}</div>`;
     return;
   }
   $list.innerHTML = rows.map(a => `
@@ -148,12 +151,12 @@ async function load() {
 
 function setTabs() {
   $tabs.innerHTML = TOPICS.map(([v, label]) =>
-    `<button data-v="${v}" aria-pressed="${mode.type === "topic" && mode.value === v}">${label}</button>`).join("");
+    `<button data-v="${v}" aria-pressed="${topic === v}">${label}</button>`).join("");
 }
 
 $tabs.addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
-  mode = { type: "topic", value: b.dataset.v };
+  topic = b.dataset.v; extra = "";
   $q.value = ""; $hint.textContent = "";
   setTabs(); load();
 });
@@ -163,8 +166,8 @@ document.getElementById("form").addEventListener("submit", e => {  // Enter: 전
   e.preventDefault();
   const kw = $q.value.trim();
   if (!kw) return;
-  mode = { type: "search", value: kw };
-  $hint.textContent = `"${kw}" 검색 결과`;
+  extra = kw;
+  $hint.textContent = `"${kw}" 검색 결과 (${TOPICS.find(t => t[0] === topic)[1]} 범위 내)`;
   setTabs(); load();
 });
 
