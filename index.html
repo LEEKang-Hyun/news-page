@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>News Page</title>
+<title>뉴스 모아보기</title>
 <style>
-  :root { --bg:#f7f7f5; --card:#fff; --text:#1c1c1e; --muted:#6b6b70; --accent:#ff6600; --line:#e4e4e0; }
+  :root { --bg:#f7f7f5; --card:#fff; --text:#1c1c1e; --muted:#6b6b70; --accent:#2563eb; --line:#e4e4e0; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#121214; --card:#1c1c1f; --text:#ececee; --muted:#9a9aa0; --line:#2c2c30; }
+    :root { --bg:#121214; --card:#1c1c1f; --text:#ececee; --muted:#9a9aa0; --line:#2c2c30; --accent:#4f8cff; }
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
@@ -15,99 +15,160 @@
   .wrap { max-width:760px; margin:0 auto; padding:24px 16px 64px; }
   h1 { font-size:1.5rem; margin:0 0 4px; }
   .sub { color:var(--muted); font-size:.9rem; margin-bottom:16px; }
+  form { display:flex; gap:8px; margin-bottom:12px; }
+  input[type=search] { flex:1; padding:9px 12px; border:1px solid var(--line); border-radius:8px;
+                       background:var(--card); color:var(--text); font:inherit; min-width:0; }
+  button { font:inherit; cursor:pointer; }
+  .go { padding:9px 16px; border:0; border-radius:8px; background:var(--accent); color:#fff; }
+  .hint { color:var(--muted); font-size:.8rem; margin:-4px 0 12px; }
   .tabs { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
   .tabs button { border:1px solid var(--line); background:var(--card); color:var(--text);
-                 padding:6px 14px; border-radius:999px; cursor:pointer; font:inherit; }
+                 padding:6px 14px; border-radius:999px; }
   .tabs button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
   .item { background:var(--card); border:1px solid var(--line); border-radius:10px;
           padding:12px 14px; margin-bottom:10px; }
   .item a { color:var(--text); text-decoration:none; font-weight:600; }
   .item a:hover { color:var(--accent); }
   .meta { color:var(--muted); font-size:.82rem; margin-top:4px; }
+  mark { background:#ffe58a; color:#000; border-radius:2px; }
   .msg { color:var(--muted); text-align:center; padding:32px 0; }
-  .more { display:block; margin:16px auto 0; padding:8px 20px; border-radius:8px;
-          border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; font:inherit; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>📰 News Page</h1>
-  <div class="sub">Hacker News 공개 API에서 실시간으로 불러옵니다 (API 키 불필요)</div>
-  <div class="tabs" id="tabs">
-    <button data-feed="topstories" aria-pressed="true">인기</button>
-    <button data-feed="newstories" aria-pressed="false">최신</button>
-    <button data-feed="beststories" aria-pressed="false">베스트</button>
-  </div>
+  <h1>📰 뉴스 모아보기</h1>
+  <div class="sub">Google 뉴스(한국) RSS를 실시간으로 불러옵니다 · API 키 불필요</div>
+
+  <form id="form">
+    <input type="search" id="q" placeholder="키워드 입력 (입력하면 목록 필터, Enter로 전체 검색)" autocomplete="off">
+    <button class="go" type="submit">검색</button>
+  </form>
+  <div class="hint" id="hint"></div>
+
+  <div class="tabs" id="tabs"></div>
   <div id="list"><div class="msg">불러오는 중…</div></div>
-  <button class="more" id="more" hidden>더 보기</button>
 </div>
 
 <script>
-const API = "https://hacker-news.firebaseio.com/v0";
-const PAGE_SIZE = 20;
-let ids = [], shown = 0, feed = "topstories";
+const BASE = "https://news.google.com/rss";
+const LOC = "hl=ko&gl=KR&ceid=KR:ko";
+const TOPICS = [
+  ["", "주요"], ["NATION", "국내"], ["WORLD", "세계"], ["BUSINESS", "경제"],
+  ["TECHNOLOGY", "IT"], ["SCIENCE", "과학"], ["ENTERTAINMENT", "연예"],
+  ["SPORTS", "스포츠"], ["HEALTH", "건강"],
+];
+// 브라우저에서 직접 RSS를 못 읽으므로(CORS) 공개 프록시를 순서대로 시도합니다.
+const PROXIES = [
+  u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+  u => "https://corsproxy.io/?" + encodeURIComponent(u),
+];
+
 const $list = document.getElementById("list");
-const $more = document.getElementById("more");
+const $q = document.getElementById("q");
+const $hint = document.getElementById("hint");
+const $tabs = document.getElementById("tabs");
+let articles = [], mode = { type: "topic", value: "" };
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 
-function ago(ts) {
-  const m = Math.floor((Date.now() / 1000 - ts) / 60);
-  if (m < 60) return `${Math.max(m, 1)}분 전`;
+function ago(d) {
+  const m = Math.floor((Date.now() - d) / 60000);
+  if (m < 1) return "방금 전";
+  if (m < 60) return `${m}분 전`;
   if (m < 1440) return `${Math.floor(m / 60)}시간 전`;
   return `${Math.floor(m / 1440)}일 전`;
 }
 
-function safeUrl(u, id) {
-  try { const x = new URL(u); if (x.protocol === "http:" || x.protocol === "https:") return x.href; } catch {}
-  return `https://news.ycombinator.com/item?id=${id}`;
+function feedUrl() {
+  if (mode.type === "search") return `${BASE}/search?q=${encodeURIComponent(mode.value)}&${LOC}`;
+  return mode.value ? `${BASE}/headlines/section/topic/${mode.value}?${LOC}` : `${BASE}?${LOC}`;
 }
 
-async function loadFeed(name) {
-  feed = name; shown = 0; $more.hidden = true;
+async function fetchXml(url) {
+  let lastErr;
+  for (const p of PROXIES) {
+    try {
+      const r = await fetch(p(url));
+      if (!r.ok) throw new Error(r.status);
+      const doc = new DOMParser().parseFromString(await r.text(), "text/xml");
+      if (doc.querySelector("parsererror") || !doc.querySelector("item")) throw new Error("bad xml");
+      return doc;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+function parse(doc) {
+  return [...doc.querySelectorAll("item")].map(it => {
+    const raw = it.querySelector("title")?.textContent ?? "";
+    const src = it.querySelector("source")?.textContent ?? "";
+    const title = src && raw.endsWith(" - " + src) ? raw.slice(0, -(src.length + 3)) : raw;
+    const link = it.querySelector("link")?.textContent ?? "";
+    const date = new Date(it.querySelector("pubDate")?.textContent ?? Date.now());
+    let safe = "#";
+    try { const u = new URL(link); if (/^https?:$/.test(u.protocol)) safe = u.href; } catch {}
+    return { title, src, link: safe, date };
+  });
+}
+
+function highlight(text, kw) {
+  const t = esc(text);
+  if (!kw) return t;
+  const re = new RegExp("(" + esc(kw).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "gi");
+  return t.replace(re, "<mark>$1</mark>");
+}
+
+function render() {
+  const kw = $q.value.trim();
+  const rows = kw
+    ? articles.filter(a => (a.title + " " + a.src).toLowerCase().includes(kw.toLowerCase()))
+    : articles;
+  if (!rows.length) {
+    $list.innerHTML = `<div class="msg">${kw ? "현재 목록에 일치하는 기사가 없어요. Enter를 눌러 전체 검색해 보세요." : "기사가 없어요."}</div>`;
+    return;
+  }
+  $list.innerHTML = rows.map(a => `
+    <div class="item">
+      <a href="${esc(a.link)}" target="_blank" rel="noopener noreferrer">${highlight(a.title, kw)}</a>
+      <div class="meta">${highlight(a.src, kw)} · ${ago(a.date)}</div>
+    </div>`).join("");
+}
+
+async function load() {
   $list.innerHTML = '<div class="msg">불러오는 중…</div>';
   try {
-    const r = await fetch(`${API}/${name}.json`);
-    if (!r.ok) throw new Error(r.status);
-    ids = await r.json();
-    $list.innerHTML = "";
-    await loadMore();
+    articles = parse(await fetchXml(feedUrl()));
+    render();
   } catch (e) {
-    $list.innerHTML = `<div class="msg">뉴스를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</div>`;
+    articles = [];
+    $list.innerHTML = '<div class="msg">뉴스를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</div>';
   }
 }
 
-async function loadMore() {
-  $more.disabled = true;
-  const batch = ids.slice(shown, shown + PAGE_SIZE);
-  const items = await Promise.all(batch.map(id =>
-    fetch(`${API}/item/${id}.json`).then(r => r.json()).catch(() => null)));
-  for (const it of items) {
-    if (!it || !it.title) continue;
-    const el = document.createElement("div");
-    el.className = "item";
-    const url = safeUrl(it.url, it.id);
-    let host = "";
-    try { host = new URL(url).hostname.replace(/^www\./, ""); } catch {}
-    el.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(it.title)}</a>
-      <div class="meta">${esc(host)} · ▲ ${it.score ?? 0} · ${esc(it.by)} · ${ago(it.time)} ·
-      <a href="https://news.ycombinator.com/item?id=${it.id}" target="_blank" rel="noopener noreferrer"
-         style="font-weight:400;color:inherit">댓글 ${it.descendants ?? 0}</a></div>`;
-    $list.appendChild(el);
-  }
-  shown += PAGE_SIZE;
-  $more.hidden = shown >= ids.length;
-  $more.disabled = false;
+function setTabs() {
+  $tabs.innerHTML = TOPICS.map(([v, label]) =>
+    `<button data-v="${v}" aria-pressed="${mode.type === "topic" && mode.value === v}">${label}</button>`).join("");
 }
 
-document.getElementById("tabs").addEventListener("click", e => {
+$tabs.addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
-  document.querySelectorAll("#tabs button").forEach(x => x.setAttribute("aria-pressed", x === b));
-  loadFeed(b.dataset.feed);
+  mode = { type: "topic", value: b.dataset.v };
+  $q.value = ""; $hint.textContent = "";
+  setTabs(); load();
 });
-$more.addEventListener("click", loadMore);
-loadFeed(feed);
+
+$q.addEventListener("input", render);   // 입력 중: 현재 목록 필터
+document.getElementById("form").addEventListener("submit", e => {  // Enter: 전체 검색
+  e.preventDefault();
+  const kw = $q.value.trim();
+  if (!kw) return;
+  mode = { type: "search", value: kw };
+  $hint.textContent = `"${kw}" 검색 결과`;
+  setTabs(); load();
+});
+
+setTabs(); load();
 </script>
 </body>
 </html>
