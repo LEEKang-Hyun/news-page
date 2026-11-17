@@ -59,8 +59,12 @@ const TOPICS = [
   ["sports","스포츠",        "스포츠 OR 야구 OR 축구 OR 농구 OR 배구 OR 골프 OR 올림픽"],
 ];
 // 브라우저에서 직접 RSS를 못 읽으므로(CORS) 공개 프록시를 순서대로 시도합니다.
+// 전용 Cloudflare Worker 주소 (worker/worker.js 배포 후 여기에 입력). 비워두면 공개 프록시만 사용.
+const WORKER_URL = "";
 const PROXIES = [
+  ...(WORKER_URL ? [u => WORKER_URL + "?url=" + encodeURIComponent(u)] : []),
   u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+  u => "https://api.codetabs.com/v1/proxy/?quest=" + encodeURIComponent(u),
   u => "https://corsproxy.io/?" + encodeURIComponent(u),
 ];
 
